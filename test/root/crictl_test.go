@@ -25,7 +25,8 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +51,8 @@ func SimpleSpec(name, image string, cmd []string, extra map[string]interface{}) 
 			"image": testutil.ImageByName(image),
 		},
 		"log_path": fmt.Sprintf("%s.log", name),
+		"stdin":    false,
+		"tty":      false,
 	}
 	if len(cmd) > 0 { // Omit if empty.
 		s["command"] = cmd
@@ -92,7 +95,7 @@ func TestCrictlSanity(t *testing.T) {
 				t.Fatalf("failed to setup crictl: %v", err)
 			}
 			defer cleanup()
-			podID, contID, err := crictl.StartPodAndContainer("basic/httpd", Sandbox, Httpd)
+			podID, contID, err := crictl.StartPodAndContainer(containerdRuntime, "basic/httpd", Sandbox, Httpd)
 			if err != nil {
 				t.Fatalf("start failed: %v", err)
 			}
@@ -148,7 +151,7 @@ func TestMountPaths(t *testing.T) {
 				t.Fatalf("failed to setup crictl: %v", err)
 			}
 			defer cleanup()
-			podID, contID, err := crictl.StartPodAndContainer("basic/httpd", Sandbox, HttpdMountPaths)
+			podID, contID, err := crictl.StartPodAndContainer(containerdRuntime, "basic/httpd", Sandbox, HttpdMountPaths)
 			if err != nil {
 				t.Fatalf("start failed: %v", err)
 			}
@@ -178,7 +181,7 @@ func TestMountOverSymlinks(t *testing.T) {
 			defer cleanup()
 
 			spec := SimpleSpec("busybox", "basic/resolv", []string{"sleep", "1000"}, nil)
-			podID, contID, err := crictl.StartPodAndContainer("basic/resolv", Sandbox, spec)
+			podID, contID, err := crictl.StartPodAndContainer(containerdRuntime, "basic/resolv", Sandbox, spec)
 			if err != nil {
 				t.Fatalf("start failed: %v", err)
 			}
@@ -223,7 +226,7 @@ func TestHomeDir(t *testing.T) {
 			}
 			defer cleanup()
 			contSpec := SimpleSpec("root", "basic/busybox", []string{"sleep", "1000"}, nil)
-			podID, contID, err := crictl.StartPodAndContainer("basic/busybox", Sandbox, contSpec)
+			podID, contID, err := crictl.StartPodAndContainer(containerdRuntime, "basic/busybox", Sandbox, contSpec)
 			if err != nil {
 				t.Fatalf("start failed: %v", err)
 			}
@@ -267,27 +270,40 @@ func TestHomeDir(t *testing.T) {
 	}
 }
 
+const containerdRuntime = "runsc"
+
 const v1Template = `
 disabled_plugins = ["restart"]
 [plugins.linux]
   runtime = "%s"
-  runtime_root = "/tmp"
-  shim = "/usr/bin/gvisor-containerd-shim"
+  runtime_root = "%s/root"
+  shim = "%s"
   shim_debug = true
-
-[plugins.cri.containerd.runtimes.runsc]
+[plugins.cri.containerd.runtimes.` + containerdRuntime + `]
   runtime_type = "io.containerd.runtime.v1.linux"
   runtime_engine = "%s"
 `
 
 const v2Template = `
 disabled_plugins = ["restart"]
-[plugins.cri.containerd.runtimes.runsc]
-  runtime_type = "io.containerd.runsc.v1"
-[plugins.cri.containerd.runtimes.runsc.options]
-  TypeUrl = "io.containerd.runsc.v1.options"
-  ConfigPath = "/etc/containerd/runsc.toml"
+[plugins.linux]
+  shim_debug = true
+[plugins.cri.containerd.runtimes.` + containerdRuntime + `]
+  runtime_type = "io.containerd.` + containerdRuntime + `.v1"
+[plugins.cri.containerd.runtimes.` + containerdRuntime + `.options]
+  TypeUrl = "io.containerd.` + containerdRuntime + `.v1.options"
 `
+
+const (
+	// v1 is the containerd API v1.
+	v1 string = "v1"
+
+	// v1 is the containerd API v21.
+	v2 string = "v2"
+)
+
+// allVersions is the set of known versions.
+var allVersions = []string{v1, v2}
 
 // setup sets up before a test. Specifically it:
 // * Creates directories and a socket for containerd to utilize.
@@ -310,28 +326,43 @@ func setup(t *testing.T, version string) (*criutil.Crictl, func(), error) {
 		t.Fatalf("failed to create containerd root: %v", err)
 	}
 	cleanups = append(cleanups, func() { os.RemoveAll(containerdRoot) })
+	t.Logf("Using containerd root: %s", containerdRoot)
+
 	containerdState, err := ioutil.TempDir(testutil.TmpDir(), "containerd-state")
 	if err != nil {
 		t.Fatalf("failed to create containerd state: %v", err)
 	}
 	cleanups = append(cleanups, func() { os.RemoveAll(containerdState) })
-	sockAddr := filepath.Join(testutil.TmpDir(), "containerd-test.sock")
+	t.Logf("Using containerd state: %s", containerdState)
 
-	var (
-		config    string
-		extraArgs []string
-	)
-	switch version {
-	case v1:
-		// The runtime is required within the configuration.
-		config = fmt.Sprintf(template, runtime, runtime)
-	case v2:
-		// The runtime is provided via parameter.
-		config = v2Template
-		extraArgs = []string{"--runtime", runtime}
-	default:
-		t.Fatalf("unknown version: %v", version)
+	sockDir, err := ioutil.TempDir(testutil.TmpDir(), "containerd-sock")
+	if err != nil {
+		t.Fatalf("failed to create containerd socket directory: %v", err)
 	}
+	cleanups = append(cleanups, func() { os.RemoveAll(sockDir) })
+	sockAddr := path.Join(sockDir, "test.sock")
+	t.Logf("Using containerd socket: %s", sockAddr)
+
+	// Extract the containerd version.
+	versionCmd := exec.Command(getContainerd(), "-v")
+	out, err := versionCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("error extracting containerd version: %v (%s)", err, string(out))
+	}
+	r := regexp.MustCompile(" v([0-9]+)\\.([0-9]+)\\.([0-9+])")
+	vs := r.FindStringSubmatch(string(out))
+	if len(vs) != 4 {
+		t.Fatalf("error unexpected version string: %s", string(out))
+	}
+	major, err := strconv.ParseUint(vs[1], 10, 64)
+	if err != nil {
+		t.Fatalf("error parsing containerd major version: %v (%s)", err, string(out))
+	}
+	minor, err := strconv.ParseUint(vs[2], 10, 64)
+	if err != nil {
+		t.Fatalf("error parsing containerd minor version: %v (%s)", err, string(out))
+	}
+	t.Logf("Using containerd version: %d.%d", major, minor)
 
 	// We rewrite a configuration. This is based on the current docker
 	// configuration for the runtime under test.
@@ -339,7 +370,55 @@ func setup(t *testing.T, version string) (*criutil.Crictl, func(), error) {
 	if err != nil {
 		t.Fatalf("error discovering runtime path: %v", err)
 	}
-	config, configCleanup, err := testutil.WriteTmpFile("containerd-config", config)
+	t.Logf("Using runtime: %v", runtime)
+
+	// Construct a PATH that includes the runtime directory. This is
+	// because the shims will be installed there, and containerd may infer
+	// the binary name and search the PATH.
+	runtimeDir := path.Dir(runtime)
+	modifiedPath := os.Getenv("PATH")
+	if modifiedPath != "" {
+		modifiedPath = ":" + modifiedPath // We prepend below.
+	}
+	modifiedPath = path.Dir(getContainerd()) + modifiedPath
+	modifiedPath = runtimeDir + ":" + modifiedPath
+	t.Logf("Using PATH: %v", modifiedPath)
+
+	var (
+		config   string
+		runpArgs []string
+	)
+	switch version {
+	case v1:
+		// This is only supported less than 1.2.
+		if major > 1 || (major == 1 && minor >= 2) {
+			// XXX t.Skipf("skipping unsupported containerd (want less than 1.2, got %d.%d)", major, minor)
+		}
+
+		// The runtime is required within the configuration, followed
+		// by a temporary root directory, followed by the shim,
+		// followed by the runtime again. Note that we can safely
+		// assume that the shim has been installed in the same
+		// directory as the runtime (for test installs and for normal
+		// installs). Since this is v1, the binary name will be fixed.
+		config = fmt.Sprintf(v1Template, runtime, runtimeDir, path.Join(runtimeDir, "gvisor-containerd-shim"), runtime)
+	case v2:
+		// This is only supported past 1.2.
+		if !(major >= 1 && minor >= 2) {
+			t.Skipf("skipping incompatible containerd (want at least 1.2, got %d.%d)", major, minor)
+		}
+
+		// The runtime is provided via parameter. Note that the v2 shim
+		// binary name is always containerd-shim-* so we don't actually
+		// care about the docker runtime name.
+		config = v2Template
+	default:
+		t.Fatalf("unknown version: %d", version)
+	}
+	t.Logf("Using config: %s", config)
+
+	// Generate the configuration for the test.
+	configFile, configCleanup, err := testutil.WriteTmpFile("containerd-config", config)
 	if err != nil {
 		t.Fatalf("failed to write containerd config")
 	}
@@ -348,14 +427,15 @@ func setup(t *testing.T, version string) (*criutil.Crictl, func(), error) {
 	// Start containerd.
 	args := []string{
 		getContainerd(),
-		"--config", config,
+		"--config", configFile,
 		"--log-level", "debug",
 		"--root", containerdRoot,
 		"--state", containerdState,
 		"--address", sockAddr,
 	}
-	args = append(args, extraArgs...)
-	cmd := exec.Command(args...)
+	t.Logf("Using args: %s", strings.Join(args, " "))
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Env = append(os.Environ(), "PATH="+modifiedPath)
 	startupR, startupW := io.Pipe()
 	defer startupR.Close()
 	defer startupW.Close()
@@ -378,10 +458,12 @@ func setup(t *testing.T, version string) (*criutil.Crictl, func(), error) {
 		t.Fatalf("failed to start containerd: %v", err)
 	}
 
+	// Create the crictl interface.
+	cc := criutil.NewCrictl(t, sockAddr, runpArgs)
+	cleanups = append(cleanups, cc.CleanUp)
+
 	// Kill must be the last cleanup (as it will be executed first).
-	cc := criutil.NewCrictl(t, sockAddr)
 	cleanups = append(cleanups, func() {
-		cc.CleanUp() // Remove tmp files, etc.
 		if err := testutil.KillCommand(cmd); err != nil {
 			log.Printf("error killing containerd: %v", err)
 		}
