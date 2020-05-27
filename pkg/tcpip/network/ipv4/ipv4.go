@@ -224,12 +224,10 @@ func (e *endpoint) writePacketFragments(r *stack.Route, gso *stack.GSO, mtu int,
 func (e *endpoint) addIPHeader(r *stack.Route, hdr *buffer.Prependable, payloadSize int, params stack.NetworkHeaderParams) header.IPv4 {
 	ip := header.IPv4(hdr.Prepend(header.IPv4MinimumSize))
 	length := uint16(hdr.UsedLength() + payloadSize)
-	id := uint32(0)
-	if length > header.IPv4MaximumHeaderSize+8 {
-		// Packets of 68 bytes or less are required by RFC 791 to not be
-		// fragmented, so we only assign ids to larger packets.
-		id = atomic.AddUint32(&e.protocol.ids[hashRoute(r, params.Protocol, e.protocol.hashIV)%buckets], 1)
-	}
+	// ID can be 0 if the IP packet is atomic, i.e. the DF bit is set and
+	// it's not a fragment. Since the DF bit is never being set, always
+	// assign an ID.
+	id := atomic.AddUint32(&e.protocol.ids[hashRoute(r, params.Protocol, e.protocol.hashIV)%buckets], 1)
 	ip.Encode(&header.IPv4Fields{
 		IHL:         header.IPv4MinimumSize,
 		TotalLength: length,
@@ -396,13 +394,11 @@ func (e *endpoint) WriteHeaderIncludedPacket(r *stack.Route, pkt stack.PacketBuf
 
 	// Set the packet ID when zero.
 	if ip.ID() == 0 {
-		id := uint32(0)
-		if pkt.Data.Size() > header.IPv4MaximumHeaderSize+8 {
-			// Packets of 68 bytes or less are required by RFC 791 to not be
-			// fragmented, so we only assign ids to larger packets.
-			id = atomic.AddUint32(&e.protocol.ids[hashRoute(r, 0 /* protocol */, e.protocol.hashIV)%buckets], 1)
+		// Assign an ID to all non-atomic datagrams as defined by
+		// RFC 6864 section 4.
+		if ip.Flags()&header.IPv4FlagDontFragment == 0 || ip.Flags()&header.IPv4FlagMoreFragments != 0 || ip.FragmentOffset() > 0 {
+			ip.SetID(uint16(atomic.AddUint32(&e.protocol.ids[hashRoute(r, 0 /* protocol */, e.protocol.hashIV)%buckets], 1)))
 		}
-		ip.SetID(uint16(id))
 	}
 
 	// Always set the checksum.
