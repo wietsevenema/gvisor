@@ -19,11 +19,11 @@ import (
 	"time"
 )
 
-// cancellableTimerInstance is a specific instance of CancellableTimer.
+// cancellableTimerInstance is a specific instance of cancellableTimer.
 //
-// Different instances are created each time CancellableTimer is Reset so each
+// Different instances are created each time cancellableTimer is Reset so each
 // timer has its own earlyReturn signal. This is to address a bug when a
-// CancellableTimer is stopped and reset in quick succession resulting in a
+// cancellableTimer is stopped and reset in quick succession resulting in a
 // timer instance's earlyReturn signal being affected or seen by another timer
 // instance.
 //
@@ -32,7 +32,7 @@ import (
 // lock L; T2, T3, T4 and T5 are goroutines that handle the first (A), second
 // (B), third (C), and fourth (D) instance of the timer firing, respectively):
 //   T1: Obtain L
-//   T1: Create a new CancellableTimer w/ lock L (create instance A)
+//   T1: Create a new cancellableTimer w/ lock L (create instance A)
 //   T2: instance A fires, blocked trying to obtain L.
 //   T1: Attempt to stop instance A (set earlyReturn = true)
 //   T1: Reset timer (create instance B)
@@ -50,7 +50,7 @@ import (
 // further, then instance D will never early return even though it was not
 // requested to stop. If the timers reset earlyReturn before early returning,
 // then all but one of the timers will do work when only one was expected to.
-// If CancellableTimer resets earlyReturn when resetting, then all the timers
+// If cancellableTimer resets earlyReturn when resetting, then all the timers
 // will fire (again, when only one was expected to).
 //
 // To address the above concerns the simplest solution was to give each timer
@@ -83,15 +83,15 @@ func (t *cancellableTimerInstance) stop() {
 	}
 }
 
-// CancellableTimer is a timer that does some work and can be safely cancelled
+// cancellableTimer is a timer that does some work and can be safely cancelled
 // when it fires at the same time some "related work" is being done.
 //
 // The term "related work" is defined as some work that needs to be done while
 // holding some lock that the timer must also hold while doing some work.
 //
-// Note, it is not safe to copy a CancellableTimer as its timer instance creates
-// a closure over the address of the CancellableTimer.
-type CancellableTimer struct {
+// Note, it is not safe to copy a cancellableTimer as its timer instance creates
+// a closure over the address of the cancellableTimer.
+type cancellableTimer struct {
 	// The active instance of a cancellable timer.
 	instance cancellableTimerInstance
 
@@ -110,28 +110,24 @@ type CancellableTimer struct {
 	fn func()
 }
 
-// StopLocked prevents the Timer from firing if it has not fired already.
-//
-// If the timer is blocked on obtaining the t.locker lock when StopLocked is
-// called, it will early return instead of calling t.fn.
+var _ Timer = (*cancellableTimer)(nil)
+
+// StopLocked implements Timer.StopLocked.
 //
 // Note, t will be modified.
 //
 // t.locker MUST be locked.
-func (t *CancellableTimer) StopLocked() {
+func (t *cancellableTimer) StopLocked() {
 	t.instance.stop()
 
 	// Nothing to do with the stopped instance anymore.
 	t.instance = cancellableTimerInstance{}
 }
 
-// Reset changes the timer to expire after duration d.
+// Reset implements Timer.Reset.
 //
 // Note, t will be modified.
-//
-// Reset should only be called on stopped or expired timers. To be safe, callers
-// should always call StopLocked before calling Reset.
-func (t *CancellableTimer) Reset(d time.Duration) {
+func (t *cancellableTimer) Reset(d time.Duration) {
 	// Create a new instance.
 	earlyReturn := false
 
@@ -159,26 +155,26 @@ func (t *CancellableTimer) Reset(d time.Duration) {
 
 // Lock is a no-op used by the copylocks checker from go vet.
 //
-// See CancellableTimer for details about why it shouldn't be copied.
+// See cancellableTimer for details about why it shouldn't be copied.
 //
 // See https://github.com/golang/go/issues/8005#issuecomment-190753527 for more
 // details about the copylocks checker.
-func (*CancellableTimer) Lock() {}
+func (*cancellableTimer) Lock() {}
 
 // Unlock is a no-op used by the copylocks checker from go vet.
 //
-// See CancellableTimer for details about why it shouldn't be copied.
+// See cancellableTimer for details about why it shouldn't be copied.
 //
 // See https://github.com/golang/go/issues/8005#issuecomment-190753527 for more
 // details about the copylocks checker.
-func (*CancellableTimer) Unlock() {}
+func (*cancellableTimer) Unlock() {}
 
-// NewCancellableTimer returns an unscheduled CancellableTimer with the given
+// newCancellableTimer returns an unscheduled cancellableTimer with the given
 // locker and fn.
 //
 // fn MUST NOT attempt to lock locker.
 //
 // Callers must call Reset to schedule the timer to fire.
-func NewCancellableTimer(locker sync.Locker, fn func()) *CancellableTimer {
-	return &CancellableTimer{locker: locker, fn: fn}
+func newCancellableTimer(locker sync.Locker, fn func()) *cancellableTimer {
+	return &cancellableTimer{locker: locker, fn: fn}
 }

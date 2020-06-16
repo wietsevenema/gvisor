@@ -518,7 +518,7 @@ type defaultRouterState struct {
 	// Timer to invalidate the default router.
 	//
 	// Must not be nil.
-	invalidationTimer *tcpip.CancellableTimer
+	invalidationTimer tcpip.Timer
 }
 
 // onLinkPrefixState holds data associated with an on-link prefix discovered by
@@ -528,7 +528,7 @@ type onLinkPrefixState struct {
 	// Timer to invalidate the on-link prefix.
 	//
 	// Must not be nil.
-	invalidationTimer *tcpip.CancellableTimer
+	invalidationTimer tcpip.Timer
 }
 
 // tempSLAACAddrState holds state associated with a temporary SLAAC address.
@@ -536,17 +536,17 @@ type tempSLAACAddrState struct {
 	// Timer to deprecate the temporary SLAAC address.
 	//
 	// Must not be nil.
-	deprecationTimer *tcpip.CancellableTimer
+	deprecationTimer tcpip.Timer
 
 	// Timer to invalidate the temporary SLAAC address.
 	//
 	// Must not be nil.
-	invalidationTimer *tcpip.CancellableTimer
+	invalidationTimer tcpip.Timer
 
 	// Timer to regenerate the temporary SLAAC address.
 	//
 	// Must not be nil.
-	regenTimer *tcpip.CancellableTimer
+	regenTimer tcpip.Timer
 
 	createdAt time.Time
 
@@ -564,12 +564,12 @@ type slaacPrefixState struct {
 	// Timer to deprecate the prefix.
 	//
 	// Must not be nil.
-	deprecationTimer *tcpip.CancellableTimer
+	deprecationTimer tcpip.Timer
 
 	// Timer to invalidate the prefix.
 	//
 	// Must not be nil.
-	invalidationTimer *tcpip.CancellableTimer
+	invalidationTimer tcpip.Timer
 
 	// Nonzero only when the address is not valid forever.
 	validUntil time.Time
@@ -979,7 +979,7 @@ func (ndp *ndpState) rememberDefaultRouter(ip tcpip.Address, rl time.Duration) {
 	}
 
 	state := defaultRouterState{
-		invalidationTimer: tcpip.NewCancellableTimer(&ndp.nic.mu, func() {
+		invalidationTimer: ndp.nic.stack.clock.NewTimer(&ndp.nic.mu, func() {
 			ndp.invalidateDefaultRouter(ip)
 		}),
 	}
@@ -1009,7 +1009,7 @@ func (ndp *ndpState) rememberOnLinkPrefix(prefix tcpip.Subnet, l time.Duration) 
 	}
 
 	state := onLinkPrefixState{
-		invalidationTimer: tcpip.NewCancellableTimer(&ndp.nic.mu, func() {
+		invalidationTimer: ndp.nic.stack.clock.NewTimer(&ndp.nic.mu, func() {
 			ndp.invalidateOnLinkPrefix(prefix)
 		}),
 	}
@@ -1154,7 +1154,7 @@ func (ndp *ndpState) doSLAAC(prefix tcpip.Subnet, pl, vl time.Duration) {
 	}
 
 	state := slaacPrefixState{
-		deprecationTimer: tcpip.NewCancellableTimer(&ndp.nic.mu, func() {
+		deprecationTimer: ndp.nic.stack.clock.NewTimer(&ndp.nic.mu, func() {
 			state, ok := ndp.slaacPrefixes[prefix]
 			if !ok {
 				panic(fmt.Sprintf("ndp: must have a slaacPrefixes entry for the deprecated SLAAC prefix %s", prefix))
@@ -1162,7 +1162,7 @@ func (ndp *ndpState) doSLAAC(prefix tcpip.Subnet, pl, vl time.Duration) {
 
 			ndp.deprecateSLAACAddress(state.stableAddr.ref)
 		}),
-		invalidationTimer: tcpip.NewCancellableTimer(&ndp.nic.mu, func() {
+		invalidationTimer: ndp.nic.stack.clock.NewTimer(&ndp.nic.mu, func() {
 			state, ok := ndp.slaacPrefixes[prefix]
 			if !ok {
 				panic(fmt.Sprintf("ndp: must have a slaacPrefixes entry for the invalidated SLAAC prefix %s", prefix))
@@ -1428,7 +1428,7 @@ func (ndp *ndpState) generateTempSLAACAddr(prefix tcpip.Subnet, prefixState *sla
 	}
 
 	state := tempSLAACAddrState{
-		deprecationTimer: tcpip.NewCancellableTimer(&ndp.nic.mu, func() {
+		deprecationTimer: ndp.nic.stack.clock.NewTimer(&ndp.nic.mu, func() {
 			prefixState, ok := ndp.slaacPrefixes[prefix]
 			if !ok {
 				panic(fmt.Sprintf("ndp: must have a slaacPrefixes entry for %s to deprecate temporary address %s", prefix, generatedAddr))
@@ -1441,7 +1441,7 @@ func (ndp *ndpState) generateTempSLAACAddr(prefix tcpip.Subnet, prefixState *sla
 
 			ndp.deprecateSLAACAddress(tempAddrState.ref)
 		}),
-		invalidationTimer: tcpip.NewCancellableTimer(&ndp.nic.mu, func() {
+		invalidationTimer: ndp.nic.stack.clock.NewTimer(&ndp.nic.mu, func() {
 			prefixState, ok := ndp.slaacPrefixes[prefix]
 			if !ok {
 				panic(fmt.Sprintf("ndp: must have a slaacPrefixes entry for %s to invalidate temporary address %s", prefix, generatedAddr))
@@ -1454,7 +1454,7 @@ func (ndp *ndpState) generateTempSLAACAddr(prefix tcpip.Subnet, prefixState *sla
 
 			ndp.invalidateTempSLAACAddr(prefixState.tempAddrs, generatedAddr.Address, tempAddrState)
 		}),
-		regenTimer: tcpip.NewCancellableTimer(&ndp.nic.mu, func() {
+		regenTimer: ndp.nic.stack.clock.NewTimer(&ndp.nic.mu, func() {
 			prefixState, ok := ndp.slaacPrefixes[prefix]
 			if !ok {
 				panic(fmt.Sprintf("ndp: must have a slaacPrefixes entry for %s to regenerate temporary address after %s", prefix, generatedAddr))

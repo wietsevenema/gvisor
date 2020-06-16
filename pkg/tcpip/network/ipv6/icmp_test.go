@@ -951,3 +951,59 @@ func TestICMPChecksumValidationWithPayloadMultipleViews(t *testing.T) {
 		})
 	}
 }
+
+type testLinkEP struct {
+	stack.LinkEndpoint
+
+	lastSentRemoteLinkAddr tcpip.LinkAddress
+}
+
+var _ stack.LinkEndpoint = (*testLinkEP)(nil)
+
+func (e *testLinkEP) WritePacket(r *stack.Route, gso *stack.GSO, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) *tcpip.Error {
+	e.lastSentRemoteLinkAddr = r.RemoteLinkAddress
+	return nil
+}
+
+func (*testLinkEP) MaxHeaderLength() uint16 { return 0 }
+
+func (*testLinkEP) LinkAddress() tcpip.LinkAddress { return linkAddr0 }
+
+func TestLinkAddressRequest(t *testing.T) {
+	snaddr := header.SolicitedNodeAddr(lladdr0)
+	mcaddr := header.EthernetAddressFromMulticastIPv6Address(snaddr)
+
+	tests := []struct {
+		name           string
+		remoteLinkAddr tcpip.LinkAddress
+		expectLinkAddr tcpip.LinkAddress
+	}{
+		{
+			name:           "Unicast",
+			remoteLinkAddr: linkAddr1,
+			expectLinkAddr: linkAddr1,
+		},
+		{
+			name:           "Multicast",
+			remoteLinkAddr: "",
+			expectLinkAddr: mcaddr,
+		},
+	}
+
+	for _, test := range tests {
+		p := NewProtocol()
+		linkRes, ok := p.(stack.LinkAddressResolver)
+		if !ok {
+			t.Fatalf("expected ARP protocol to implement stack.LinkAddressResolver")
+		}
+
+		linkEP := testLinkEP{}
+		if err := linkRes.LinkAddressRequest(lladdr0, lladdr1, test.remoteLinkAddr, &linkEP); err != nil {
+			t.Errorf("got p.LinkAddressRequest(%s, %s, %s, _) = %s, want = nil", lladdr0, lladdr1, test.remoteLinkAddr, err)
+		}
+
+		if got, want := linkEP.lastSentRemoteLinkAddr, test.expectLinkAddr; got != want {
+			t.Errorf("got linkEP.lastSentRemoteLinkAddr = %s, want = %s", got, want)
+		}
+	}
+}
