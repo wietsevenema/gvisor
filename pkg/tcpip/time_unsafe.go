@@ -20,11 +20,13 @@
 package tcpip
 
 import (
+	"sync"
 	_ "time"   // Used with go:linkname.
 	_ "unsafe" // Required for go:linkname.
 )
 
-// StdClock implements Clock with the time package.
+// StdClock provides the current time with the time package and schedules
+// cancellable work using timers.
 //
 // +stateify savable
 type StdClock struct{}
@@ -44,4 +46,9 @@ func (*StdClock) NowNanoseconds() int64 {
 func (*StdClock) NowMonotonic() int64 {
 	_, _, mono := now()
 	return mono
+}
+
+// NewJob implements Clock.NewJob.
+func (*StdClock) NewJob(l sync.Locker, f func()) Job {
+	return newCancellableTimer(l, f)
 }

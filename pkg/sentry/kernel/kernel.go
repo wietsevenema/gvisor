@@ -1465,6 +1465,12 @@ func (k *Kernel) NowMonotonic() int64 {
 	return now
 }
 
+// NewJob implements tcpip.Clock.NewJob.
+func (*Kernel) NewJob(l sync.Locker, f func()) tcpip.Job {
+	var c tcpip.StdClock
+	return c.NewJob(l, f)
+}
+
 // SetMemoryFile sets Kernel.mf. SetMemoryFile must be called before Init or
 // LoadFrom.
 func (k *Kernel) SetMemoryFile(mf *pgalloc.MemoryFile) {

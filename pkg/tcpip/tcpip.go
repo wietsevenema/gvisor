@@ -192,7 +192,25 @@ func (e ErrSaveRejection) Error() string {
 	return "save rejected due to unsupported networking state: " + e.Err.Error()
 }
 
-// A Clock provides the current time.
+// Job represents some work that can be scheduled for execution.
+type Job interface {
+	// Schedule schedules the Job for execution after duration d. This can be
+	// called on cancelled or completed Jobs to schedule them again.
+	//
+	// Schedule should be invoked only on unscheduled, cancelled, or completed
+	// Jobs. To be safe, callers should always call Cancel before calling
+	// Schedule.
+	Schedule(d time.Duration)
+
+	// Cancel prevents the Job from executing if it has not executed already.
+	//
+	// Cancel requires appropriate locking to be in place for any resources
+	// managed by the Job. If the Job is blocked on obtaining the lock when
+	// Cancel is called, it will early return.
+	Cancel()
+}
+
+// A Clock provides the current time and schedules Jobs for execution.
 //
 // Times returned by a Clock should always be used for application-visible
 // time. Only monotonic times should be used for netstack internal timekeeping.
@@ -203,6 +221,41 @@ type Clock interface {
 
 	// NowMonotonic returns a monotonic time value.
 	NowMonotonic() int64
+
+	// NewJob returns a new Job that can be used to schedule f to run in its own
+	// gorountine. l will be locked before calling f then unlocked after f
+	// returns.
+	//
+	//  var clock tcpip.StdClock
+	//  var mu sync.Mutex
+	//  message := "foo"
+	//  job := clock.NewJob(&mu, func() {
+	//    fmt.Println(message)
+	//  })
+	//  job.Schedule(time.Second)
+	//
+	//  mu.Lock()
+	//  message = "bar"
+	//  mu.Unlock()
+	//
+	//  // Output: bar
+	//
+	// f MUST NOT attempt to lock l.
+	//
+	// l MUST be locked prior to calling the returned job's Cancel().
+	//
+	//  var clock tcpip.StdClock
+	//  var mu sync.Mutex
+	//  message := "foo"
+	//  job := clock.NewJob(&mu, func() {
+	//    fmt.Println(message)
+	//  })
+	//  job.Schedule(time.Second)
+	//
+	//  mu.Lock()
+	//  job.Cancel()
+	//  mu.Unlock()
+	NewJob(l sync.Locker, f func()) Job
 }
 
 // Address is a byte slice cast as a string that represents the address of a
