@@ -27,6 +27,18 @@ go_template_instance(
     },
 )
 
+go_template_instance(
+    name = "tuple_list",
+    out = "tuple_list.go",
+    package = "stack",
+    prefix = "tuple",
+    template = "//pkg/ilist:generic_list",
+    types = {
+        "Element": "*tuple",
+        "Linker": "*tuple",
+    },
+)
+
 go_library(
     name = "stack",
     srcs = [
@@ -50,6 +62,7 @@ go_library(
         "stack_global_state.go",
         "stack_options.go",
         "transport_demuxer.go",
+        "tuple_list.go",
     ],
     visibility = ["//visibility:public"],
     deps = [

@@ -16,6 +16,7 @@ package stack
 
 import (
 	"fmt"
+	"time"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -41,12 +42,15 @@ const (
 // underflow.
 const HookUnset = -1
 
+// reaperDelay is how long to wait before starting to reap connections.
+const reaperDelay = 5 * time.Second
+
 // DefaultTables returns a default set of tables. Each chain is set to accept
 // all packets.
 func DefaultTables() *IPTables {
 	// TODO(gvisor.dev/issue/170): We may be able to swap out some strings for
 	// iotas.
-	return &IPTables{
+	ipt := IPTables{
 		tables: map[string]Table{
 			TablenameNat: Table{
 				Rules: []Rule{
@@ -111,11 +115,15 @@ func DefaultTables() *IPTables {
 			Prerouting: []string{TablenameMangle, TablenameNat},
 			Output:     []string{TablenameMangle, TablenameNat, TablenameFilter},
 		},
-		connections: ConnTrackTable{
-			CtMap: make(map[uint32]ConnTrackTupleHolder),
-			Seed:  generateRandUint32(),
+		connections: ConnTrack{
+			seed:    generateRandUint32(),
+			buckets: make([]bucket, numBuckets),
 		},
+		reaperDone: make(chan struct{}),
 	}
+	ipt.startReaper(reaperDelay)
+
+	return &ipt
 }
 
 // EmptyFilterTable returns a Table with no rules and the filter table chains
@@ -213,7 +221,7 @@ func (it *IPTables) Check(hook Hook, pkt *PacketBuffer, gso *GSO, r *Route, addr
 
 	// Packets are manipulated only if connection and matching
 	// NAT rule exists.
-	it.connections.HandlePacket(pkt, hook, gso, r)
+	it.connections.handlePacket(pkt, hook, gso, r)
 
 	// Go through each table containing the hook.
 	for _, tablename := range it.GetPriorities(hook) {
@@ -248,6 +256,35 @@ func (it *IPTables) Check(hook Hook, pkt *PacketBuffer, gso *GSO, r *Route, addr
 
 	// Every table returned Accept.
 	return true
+}
+
+// beforeSave is invoked by stateify.
+func (it *IPTables) beforeSave() {
+	// Ensure the reaper exits cleanly.
+	it.reaperDone <- struct{}{}
+	// Prevent others from modifying the connection table.
+	it.connections.mu.Lock()
+}
+
+// afterLoad is invoked by stateify.
+func (it *IPTables) afterLoad() {
+	it.startReaper(reaperDelay)
+}
+
+// startReaper starts a goroutine that wakes up periodically to reap timed out
+// connections.
+func (it *IPTables) startReaper(interval time.Duration) {
+	go func() { // S/R-SAFE: reaperDone is signalled when iptables is saved.
+		bucket := 0
+		for {
+			select {
+			case <-it.reaperDone:
+				return
+			case <-time.After(interval):
+				bucket, interval = it.connections.reapUnused(bucket, interval)
+			}
+		}
+	}()
 }
 
 // CheckPackets runs pkts through the rules for hook and returns a map of packets that

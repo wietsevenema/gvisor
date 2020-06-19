@@ -78,6 +78,8 @@ const (
 )
 
 // IPTables holds all the tables for a netstack.
+//
+// +stateify savable
 type IPTables struct {
 	// mu protects tables, priorities, and modified.
 	mu sync.RWMutex
@@ -96,11 +98,16 @@ type IPTables struct {
 	// don't utilize iptables.
 	modified bool
 
-	connections ConnTrackTable
+	connections ConnTrack
+
+	// reaperDone can be signalled to stop the reaper goroutine.
+	reaperDone chan struct{}
 }
 
 // A Table defines a set of chains and hooks into the network stack. It is
 // really just a list of rules.
+//
+// +stateify savable
 type Table struct {
 	// Rules holds the rules that make up the table.
 	Rules []Rule
@@ -130,6 +137,8 @@ func (table *Table) ValidHooks() uint32 {
 // contains zero or more matchers, each of which is a specification of which
 // packets this rule applies to. If there are no matchers in the rule, it
 // applies to any packet.
+//
+// +stateify savable
 type Rule struct {
 	// Filter holds basic IP filtering fields common to every rule.
 	Filter IPHeaderFilter
@@ -142,6 +151,8 @@ type Rule struct {
 }
 
 // IPHeaderFilter holds basic IP filtering data common to every rule.
+//
+// +stateify savable
 type IPHeaderFilter struct {
 	// Protocol matches the transport protocol.
 	Protocol tcpip.TransportProtocolNumber
@@ -249,5 +260,5 @@ type Target interface {
 	// Action takes an action on the packet and returns a verdict on how
 	// traversal should (or should not) continue. If the return value is
 	// Jump, it also returns the index of the rule to jump to.
-	Action(packet *PacketBuffer, connections *ConnTrackTable, hook Hook, gso *GSO, r *Route, address tcpip.Address) (RuleVerdict, int)
+	Action(packet *PacketBuffer, connections *ConnTrack, hook Hook, gso *GSO, r *Route, address tcpip.Address) (RuleVerdict, int)
 }
