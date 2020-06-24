@@ -316,6 +316,11 @@ func (fd *FileDescription) IsWritable() bool {
 	return fd.writable
 }
 
+// IsAppendOnly returns true if fd was opened with O_APPEND.
+func (fd *FileDescription) IsAppendOnly() bool {
+	return fd.StatusFlags()&linux.O_APPEND != 0
+}
+
 // Impl returns the FileDescriptionImpl associated with fd.
 func (fd *FileDescription) Impl() FileDescriptionImpl {
 	return fd.impl
