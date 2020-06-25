@@ -60,7 +60,7 @@ func runTests() int {
 	}
 
 	// Construct the shared docker instance.
-	d := dockerutil.MakeDocker(testutil.DefaultLogger(*lang))
+	d := dockerutil.MakeContainer(testutil.DefaultLogger(*lang))
 	defer d.CleanUp()
 
 	// Get a slice of tests to run. This will also start a single Docker
@@ -77,7 +77,7 @@ func runTests() int {
 }
 
 // getTests executes all tests as table tests.
-func getTests(d *dockerutil.Docker, excludes map[string]struct{}) ([]testing.InternalTest, error) {
+func getTests(d *dockerutil.Container, excludes map[string]struct{}) ([]testing.InternalTest, error) {
 	// Start the container.
 	opts := dockerutil.RunOpts{
 		Image: fmt.Sprintf("runtimes/%s", *image),
@@ -88,7 +88,7 @@ func getTests(d *dockerutil.Docker, excludes map[string]struct{}) ([]testing.Int
 	}
 
 	// Get a list of all tests in the image.
-	list, err := d.Exec(dockerutil.RunOpts{}, "/proctor/proctor", "--runtime", *lang, "--list")
+	list, err := d.Exec(dockerutil.ExecOpts{}, "/proctor/proctor", "--runtime", *lang, "--list")
 	if err != nil {
 		return nil, fmt.Errorf("docker exec failed: %v", err)
 	}
@@ -123,7 +123,7 @@ func getTests(d *dockerutil.Docker, excludes map[string]struct{}) ([]testing.Int
 
 				go func() {
 					fmt.Printf("RUNNING %s...\n", tc)
-					output, err = d.Exec(dockerutil.RunOpts{}, "/proctor/proctor", "--runtime", *lang, "--test", tc)
+					output, err = d.Exec(dockerutil.ExecOpts{}, "/proctor/proctor", "--runtime", *lang, "--test", tc)
 					close(done)
 				}()
 

@@ -30,7 +30,7 @@ import (
 // TestChroot verifies that the sandbox is chroot'd and that mounts are cleaned
 // up after the sandbox is destroyed.
 func TestChroot(t *testing.T) {
-	d := dockerutil.MakeDocker(t)
+	d := dockerutil.MakeContainer(t)
 	defer d.CleanUp()
 
 	if err := d.Spawn(dockerutil.RunOpts{
@@ -79,7 +79,7 @@ func TestChroot(t *testing.T) {
 }
 
 func TestChrootGofer(t *testing.T) {
-	d := dockerutil.MakeDocker(t)
+	d := dockerutil.MakeContainer(t)
 	defer d.CleanUp()
 
 	if err := d.Spawn(dockerutil.RunOpts{
