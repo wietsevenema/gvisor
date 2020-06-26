@@ -85,7 +85,7 @@ def cc_binary(name, static = False, **kwargs):
         **kwargs
     )
 
-def go_binary(name, static = False, pure = False, **kwargs):
+def go_binary(name, static = False, pure = False, x_defs = None, **kwargs):
     """Build a go binary.
 
     Args:

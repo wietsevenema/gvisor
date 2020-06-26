@@ -12,6 +12,8 @@ NogoInfo = provider(
         "facts": "serialized package facts",
         "importpath": "package import path",
         "binaries": "package binary files",
+        "srcs": "original source files (for go_test support)",
+        "deps": "original deps (for go_test support)",
     },
 )
 
@@ -21,12 +23,22 @@ def _nogo_aspect_impl(target, ctx):
     # All work is done in the shadow properties for go rules. For a proto
     # library, we simply skip the analysis portion but still need to return a
     # valid NogoInfo to reference the generated binary.
-    if ctx.rule.kind == "go_library":
+    if ctx.rule.kind in ("go_library", "go_test"):
         srcs = ctx.rule.files.srcs
-    elif ctx.rule.kind == "go_proto_library" or ctx.rule.kind == "go_wrap_cc":
+        deps = ctx.rule.attr.deps
+    elif ctx.rule.kind in ("go_proto_library", "go_wrap_cc"):
         srcs = []
+        deps = ctx.rule.attr.deps
     else:
         return [NogoInfo()]
+
+    # If we're using the "library" attribute, then we need to aggregate the
+    # original library sources and dependencies into this target to perform
+    # proper type analysis.
+    if ctx.rule.kind == "go_test" and ctx.rule.attr.library != None:
+        info = ctx.rule.attr.library[NogoInfo]
+        srcs = srcs + ctx.rule.attr.library[NogoInfo].srcs
+        deps = deps + ctx.rule.attr.library[NogoInfo].deps
 
     # Construct the Go environment from the go_context.env dictionary.
     env_prefix = " ".join(["%s=%s" % (key, value) for (key, value) in go_context(ctx).env.items()])
@@ -39,6 +51,13 @@ def _nogo_aspect_impl(target, ctx):
     # to cleanly allow us redirect stdout to the actual output file. Perhaps
     # I'm missing something here, but the intermediate script does work.
     binaries = target.files.to_list()
+    objfiles = [f for f in binaries if f.path.endswith(".a")]
+    if len(objfiles) > 0:
+        # Prefer the .a files for go_library targets.
+        target_objfile = objfiles[0]
+    else:
+        # Use the raw binary for go_binary and go_test targets.
+        target_objfile = binaries[0]
     disasm_file = ctx.actions.declare_file(target.label.name + ".out")
     dumper = ctx.actions.declare_file("%s-dumper" % ctx.label.name)
     ctx.actions.write(dumper, "\n".join([
@@ -46,12 +65,12 @@ def _nogo_aspect_impl(target, ctx):
         "%s %s tool objdump %s > %s\n" % (
             env_prefix,
             go_context(ctx).go.path,
-            [f.path for f in binaries if f.path.endswith(".a")][0],
+            target_objfile.path,
             disasm_file.path,
         ),
     ]), is_executable = True)
     ctx.actions.run(
-        inputs = binaries,
+        inputs = [target_objfile],
         outputs = [disasm_file],
         tools = go_context(ctx).runfiles,
         mnemonic = "GoObjdump",
@@ -61,7 +80,10 @@ def _nogo_aspect_impl(target, ctx):
     inputs.append(disasm_file)
 
     # Extract the importpath for this package.
-    importpath = go_importpath(target)
+    if ctx.rule.kind == "go_test" and ctx.rule.attr.library != None:
+        importpath = go_importpath(ctx.rule.attr.library)
+    else:
+        importpath = go_importpath(target)
 
     # The nogo tool requires a configfile serialized in JSON format to do its
     # work. This must line up with the nogo.Config fields.
@@ -80,7 +102,7 @@ def _nogo_aspect_impl(target, ctx):
     )
 
     # Collect all info from shadow dependencies.
-    for dep in ctx.rule.attr.deps:
+    for dep in deps:
         # There will be no file attribute set for all transitive dependencies
         # that are not go_library or go_binary rules, such as a proto rules.
         # This is handled by the ctx.rule.kind check above.
@@ -122,12 +144,17 @@ def _nogo_aspect_impl(target, ctx):
         facts = facts,
         importpath = importpath,
         binaries = binaries,
+        srcs = srcs,
+        deps = deps,
     )]
 
 nogo_aspect = go_rule(
     aspect,
     implementation = _nogo_aspect_impl,
-    attr_aspects = ["deps"],
+    attr_aspects = [
+        "deps",
+        "library",
+    ],
     attrs = {
         "_nogo": attr.label(
             default = "//tools/nogo/check:check",
