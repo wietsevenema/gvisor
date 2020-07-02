@@ -139,11 +139,15 @@ func (d *readVDispatcher) dispatch() (bool, *tcpip.Error) {
 	}
 
 	used := d.capViews(n, BufConfig)
-	pkt := &stack.PacketBuffer{
-		Data:       buffer.NewVectorisedView(n, append([]buffer.View(nil), d.views[:used]...)),
-		LinkHeader: buffer.View(eth),
+	pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+		Data: buffer.NewVectorisedView(n, append([]buffer.View(nil), d.views[:used]...)),
+	})
+	if len(eth) > 0 {
+		_, ok := pkt.LinkHeader.Consume(len(eth))
+		if !ok {
+			panic("Consume must succeed")
+		}
 	}
-	pkt.Data.TrimFront(d.e.hdrSize)
 
 	d.e.dispatcher.DeliverNetworkPacket(remote, local, p, pkt)
 
@@ -278,7 +282,7 @@ func (d *recvMMsgDispatcher) dispatch() (bool, *tcpip.Error) {
 			eth           header.Ethernet
 		)
 		if d.e.hdrSize > 0 {
-			eth = header.Ethernet(d.views[k][0])
+			eth = header.Ethernet(d.views[k][0][:header.EthernetMinimumSize])
 			p = eth.Type()
 			remote = eth.SourceAddress()
 			local = eth.DestinationAddress()
@@ -296,11 +300,15 @@ func (d *recvMMsgDispatcher) dispatch() (bool, *tcpip.Error) {
 		}
 
 		used := d.capViews(k, int(n), BufConfig)
-		pkt := &stack.PacketBuffer{
-			Data:       buffer.NewVectorisedView(int(n), append([]buffer.View(nil), d.views[k][:used]...)),
-			LinkHeader: buffer.View(eth),
+		pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+			Data: buffer.NewVectorisedView(int(n), append([]buffer.View(nil), d.views[k][:used]...)),
+		})
+		if len(eth) > 0 {
+			_, ok := pkt.LinkHeader.Consume(len(eth))
+			if !ok {
+				panic("Consume must succeed")
+			}
 		}
-		pkt.Data.TrimFront(d.e.hdrSize)
 		d.e.dispatcher.DeliverNetworkPacket(remote, local, p, pkt)
 
 		// Prepare e.views for another packet: release used views.

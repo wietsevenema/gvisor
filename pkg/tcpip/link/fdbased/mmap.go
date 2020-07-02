@@ -190,10 +190,15 @@ func (d *packetMMapDispatcher) dispatch() (bool, *tcpip.Error) {
 		}
 	}
 
-	pkt = pkt[d.e.hdrSize:]
-	d.e.dispatcher.DeliverNetworkPacket(remote, local, p, &stack.PacketBuffer{
-		Data:       buffer.View(pkt).ToVectorisedView(),
-		LinkHeader: buffer.View(eth),
+	pbuf := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+		Data: buffer.View(pkt).ToVectorisedView(),
 	})
+	if len(eth) > 0 {
+		_, ok := pbuf.LinkHeader.Consume(len(eth))
+		if !ok {
+			panic("Consume must succeed")
+		}
+	}
+	d.e.dispatcher.DeliverNetworkPacket(remote, local, p, pbuf)
 	return true, nil
 }

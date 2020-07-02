@@ -495,21 +495,26 @@ func (p *protocol) SynRcvdCounter() *synRcvdCounter {
 
 // Parse implements stack.TransportProtocol.Parse.
 func (*protocol) Parse(pkt *stack.PacketBuffer) bool {
-	hdr, ok := pkt.Data.PullUp(header.TCPMinimumSize)
+	// TCP header is variable length, peek at it first.
+	hdrLen := header.TCPMinimumSize
+	hdr, ok := pkt.Data.PullUp(hdrLen)
 	if !ok {
 		return false
 	}
 
 	// If the header has options, pull those up as well.
 	if offset := int(header.TCP(hdr).DataOffset()); offset > header.TCPMinimumSize && offset <= pkt.Data.Size() {
-		hdr, ok = pkt.Data.PullUp(offset)
+		_, ok = pkt.Data.PullUp(offset)
 		if !ok {
 			panic(fmt.Sprintf("There should be at least %d bytes in pkt.Data.", offset))
 		}
+		hdrLen = offset
 	}
 
-	pkt.TransportHeader = hdr
-	pkt.Data.TrimFront(len(hdr))
+	_, ok = pkt.TransportHeader.Consume(hdrLen)
+	if !ok {
+		panic("Consume must succeed")
+	}
 	return true
 }
 

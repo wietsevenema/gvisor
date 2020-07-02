@@ -48,6 +48,24 @@ type packetInfo struct {
 	contents *stack.PacketBuffer
 }
 
+func checkPacketInfoEqual(t *testing.T, got, want packetInfo) {
+	if got, want := got.raddr, want.raddr; got != want {
+		t.Fatalf("Unexpected packet info: raddr = %+v, want %+v", got, want)
+	}
+	if got, want := got.proto, want.proto; got != want {
+		t.Fatalf("Unexpected packet info: raddr = %+v, want %+v", got, want)
+	}
+	if got, want := got.contents.LinkHeader.View(), want.contents.LinkHeader.View(); !bytes.Equal(got, want) {
+		t.Fatalf("Unexpected packet info: contents.LinkHeader.View() = %+v, want %+v", got, want)
+	}
+	if got, want := got.contents.NetworkHeader.View(), want.contents.NetworkHeader.View(); !bytes.Equal(got, want) {
+		t.Fatalf("Unexpected packet info: contents.NetworkHeader.View() = %+v, want %+v", got, want)
+	}
+	if got, want := got.contents.TransportHeader.View(), want.contents.TransportHeader.View(); !bytes.Equal(got, want) {
+		t.Fatalf("Unexpected packet info: contents.TransportHeader.View() = %+v, want %+v", got, want)
+	}
+}
+
 type context struct {
 	t        *testing.T
 	readFDs  []int
@@ -155,19 +173,27 @@ func testWritePacket(t *testing.T, plen int, eth bool, gsoMaxSize uint32, hash u
 		RemoteLinkAddress: raddr,
 	}
 
-	// Build header.
-	hdr := buffer.NewPrependable(int(c.ep.MaxHeaderLength()) + 100)
-	b := hdr.Prepend(100)
-	for i := range b {
-		b[i] = uint8(rand.Intn(256))
-	}
-
-	// Build payload and write.
+	// Build payload.
 	payload := make(buffer.View, plen)
 	for i := range payload {
 		payload[i] = uint8(rand.Intn(256))
 	}
-	want := append(hdr.View(), payload...)
+
+	// Build packet buffer.
+	pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+		ReserveHeaderBytes: int(c.ep.MaxHeaderLength()) + 100,
+		Data:               payload.ToVectorisedView(),
+	})
+	pkt.Hash = hash
+
+	// Build header.
+	b := pkt.NetworkHeader.Push(100)
+	for i := range b {
+		b[i] = uint8(rand.Intn(256))
+	}
+
+	// Write.
+	want := append(append(buffer.View(nil), b...), payload...)
 	var gso *stack.GSO
 	if gsoMaxSize != 0 {
 		gso = &stack.GSO{
@@ -179,11 +205,7 @@ func testWritePacket(t *testing.T, plen int, eth bool, gsoMaxSize uint32, hash u
 			L3HdrLen:   header.IPv4MaximumHeaderSize,
 		}
 	}
-	if err := c.ep.WritePacket(r, gso, proto, &stack.PacketBuffer{
-		Header: hdr,
-		Data:   payload.ToVectorisedView(),
-		Hash:   hash,
-	}); err != nil {
+	if err := c.ep.WritePacket(r, gso, proto, pkt); err != nil {
 		t.Fatalf("WritePacket failed: %v", err)
 	}
 
@@ -292,13 +314,13 @@ func TestPreserveSrcAddress(t *testing.T) {
 		LocalLinkAddress:  baddr,
 	}
 
-	// WritePacket panics given a prependable with anything less than
-	// the minimum size of the ethernet header.
-	hdr := buffer.NewPrependable(header.EthernetMinimumSize)
-	if err := c.ep.WritePacket(r, nil /* gso */, proto, &stack.PacketBuffer{
-		Header: hdr,
-		Data:   buffer.VectorisedView{},
-	}); err != nil {
+	pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+		// WritePacket panics given a prependable with anything less than
+		// the minimum size of the ethernet header.
+		ReserveHeaderBytes: header.EthernetMinimumSize,
+		Data:               buffer.VectorisedView{},
+	})
+	if err := c.ep.WritePacket(r, nil /* gso */, proto, pkt); err != nil {
 		t.Fatalf("WritePacket failed: %v", err)
 	}
 
@@ -355,25 +377,23 @@ func TestDeliverPacket(t *testing.T) {
 				// Receive packet through the endpoint.
 				select {
 				case pi := <-c.ch:
+					wantPkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+						ReserveHeaderBytes: len(hdr),
+						Data:               buffer.View(b).ToVectorisedView(),
+					})
+					if eth {
+						copy(wantPkt.LinkHeader.Push(len(hdr)), hdr)
+					}
 					want := packetInfo{
-						raddr: raddr,
-						proto: proto,
-						contents: &stack.PacketBuffer{
-							Data:       buffer.View(b).ToVectorisedView(),
-							LinkHeader: buffer.View(hdr),
-						},
+						raddr:    raddr,
+						proto:    proto,
+						contents: wantPkt,
 					}
 					if !eth {
 						want.proto = header.IPv4ProtocolNumber
 						want.raddr = ""
 					}
-					// want.contents.Data will be a single
-					// view, so make pi do the same for the
-					// DeepEqual check.
-					pi.contents.Data = pi.contents.Data.ToView().ToVectorisedView()
-					if !reflect.DeepEqual(want, pi) {
-						t.Fatalf("Unexpected received packet: %+v, want %+v", pi, want)
-					}
+					checkPacketInfoEqual(t, pi, want)
 				case <-time.After(10 * time.Second):
 					t.Fatalf("Timed out waiting for packet")
 				}

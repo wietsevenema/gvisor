@@ -334,9 +334,9 @@ func (it *IPTables) checkRule(hook Hook, pkt *PacketBuffer, table Table, ruleIdx
 
 	// If pkt.NetworkHeader hasn't been set yet, it will be contained in
 	// pkt.Data.
-	if pkt.NetworkHeader == nil {
+	if pkt.NetworkHeader.Empty() {
 		var ok bool
-		pkt.NetworkHeader, ok = pkt.Data.PullUp(header.IPv4MinimumSize)
+		_, ok = pkt.NetworkHeader.Consume(header.IPv4MinimumSize)
 		if !ok {
 			// Precondition has been violated.
 			panic(fmt.Sprintf("iptables checks require IPv4 headers of at least %d bytes", header.IPv4MinimumSize))
@@ -344,7 +344,7 @@ func (it *IPTables) checkRule(hook Hook, pkt *PacketBuffer, table Table, ruleIdx
 	}
 
 	// Check whether the packet matches the IP header filter.
-	if !rule.Filter.match(header.IPv4(pkt.NetworkHeader), hook, nicName) {
+	if !rule.Filter.match(header.IPv4(pkt.NetworkHeader.View()), hook, nicName) {
 		// Continue on to the next rule.
 		return RuleJump, ruleIdx + 1
 	}

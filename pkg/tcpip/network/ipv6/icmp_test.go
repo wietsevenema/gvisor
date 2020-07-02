@@ -180,7 +180,11 @@ func TestICMPCounts(t *testing.T) {
 	}
 
 	handleIPv6Payload := func(icmp header.ICMPv6) {
-		ip := header.IPv6(buffer.NewView(header.IPv6MinimumSize))
+		pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+			ReserveHeaderBytes: header.IPv6MinimumSize,
+			Data:               buffer.View(icmp).ToVectorisedView(),
+		})
+		ip := header.IPv6(pkt.NetworkHeader.Push(header.IPv6MinimumSize))
 		ip.Encode(&header.IPv6Fields{
 			PayloadLength: uint16(len(icmp)),
 			NextHeader:    uint8(header.ICMPv6ProtocolNumber),
@@ -188,10 +192,7 @@ func TestICMPCounts(t *testing.T) {
 			SrcAddr:       r.LocalAddress,
 			DstAddr:       r.RemoteAddress,
 		})
-		ep.HandlePacket(&r, &stack.PacketBuffer{
-			NetworkHeader: buffer.View(ip),
-			Data:          buffer.View(icmp).ToVectorisedView(),
-		})
+		ep.HandlePacket(&r, pkt)
 	}
 
 	for _, typ := range types {
@@ -321,12 +322,14 @@ func routeICMPv6Packet(t *testing.T, args routeArgs, fn func(*testing.T, header.
 	pi, _ := args.src.ReadContext(context.Background())
 
 	{
-		views := []buffer.View{pi.Pkt.Header.View(), pi.Pkt.Data.ToView()}
-		size := pi.Pkt.Header.UsedLength() + pi.Pkt.Data.Size()
+		v, vs := pi.Pkt.Views()
+		views := []buffer.View{v, vs.ToView()}
+		size := pi.Pkt.Size()
 		vv := buffer.NewVectorisedView(size, views)
-		args.dst.InjectLinkAddr(pi.Proto, args.dst.LinkAddress(), &stack.PacketBuffer{
+		pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
 			Data: vv,
 		})
+		args.dst.InjectLinkAddr(pi.Proto, args.dst.LinkAddress(), pkt)
 	}
 
 	if pi.Proto != ProtocolNumber {
@@ -338,7 +341,7 @@ func routeICMPv6Packet(t *testing.T, args routeArgs, fn func(*testing.T, header.
 		t.Errorf("got remote link address = %s, want = %s", pi.Route.RemoteLinkAddress, args.remoteLinkAddr)
 	}
 
-	ipv6 := header.IPv6(pi.Pkt.Header.View())
+	ipv6 := header.IPv6(pi.Pkt.NetworkHeader.ViewToPacketEnd())
 	transProto := tcpip.TransportProtocolNumber(ipv6.NextHeader())
 	if transProto != header.ICMPv6ProtocolNumber {
 		t.Errorf("unexpected transport protocol number %d", transProto)
@@ -556,9 +559,10 @@ func TestICMPChecksumValidationSimple(t *testing.T) {
 					SrcAddr:       lladdr1,
 					DstAddr:       lladdr0,
 				})
-				e.InjectInbound(ProtocolNumber, &stack.PacketBuffer{
+				pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
 					Data: buffer.NewVectorisedView(len(ip)+len(icmp), []buffer.View{buffer.View(ip), buffer.View(icmp)}),
 				})
+				e.InjectInbound(ProtocolNumber, pkt)
 			}
 
 			stats := s.Stats().ICMP.V6PacketsReceived
@@ -717,12 +721,12 @@ func TestICMPChecksumValidationWithPayload(t *testing.T) {
 			handleIPv6Payload := func(typ header.ICMPv6Type, size, payloadSize int, payloadFn func(buffer.View), checksum bool) {
 				icmpSize := size + payloadSize
 				hdr := buffer.NewPrependable(header.IPv6MinimumSize + icmpSize)
-				pkt := header.ICMPv6(hdr.Prepend(icmpSize))
-				pkt.SetType(typ)
-				payloadFn(pkt.Payload())
+				icmpHdr := header.ICMPv6(hdr.Prepend(icmpSize))
+				icmpHdr.SetType(typ)
+				payloadFn(icmpHdr.Payload())
 
 				if checksum {
-					pkt.SetChecksum(header.ICMPv6Checksum(pkt, lladdr1, lladdr0, buffer.VectorisedView{}))
+					icmpHdr.SetChecksum(header.ICMPv6Checksum(icmpHdr, lladdr1, lladdr0, buffer.VectorisedView{}))
 				}
 
 				ip := header.IPv6(hdr.Prepend(header.IPv6MinimumSize))
@@ -733,9 +737,10 @@ func TestICMPChecksumValidationWithPayload(t *testing.T) {
 					SrcAddr:       lladdr1,
 					DstAddr:       lladdr0,
 				})
-				e.InjectInbound(ProtocolNumber, &stack.PacketBuffer{
+				pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
 					Data: hdr.View().ToVectorisedView(),
 				})
+				e.InjectInbound(ProtocolNumber, pkt)
 			}
 
 			stats := s.Stats().ICMP.V6PacketsReceived
@@ -893,14 +898,14 @@ func TestICMPChecksumValidationWithPayloadMultipleViews(t *testing.T) {
 
 			handleIPv6Payload := func(typ header.ICMPv6Type, size, payloadSize int, payloadFn func(buffer.View), checksum bool) {
 				hdr := buffer.NewPrependable(header.IPv6MinimumSize + size)
-				pkt := header.ICMPv6(hdr.Prepend(size))
-				pkt.SetType(typ)
+				icmpHdr := header.ICMPv6(hdr.Prepend(size))
+				icmpHdr.SetType(typ)
 
 				payload := buffer.NewView(payloadSize)
 				payloadFn(payload)
 
 				if checksum {
-					pkt.SetChecksum(header.ICMPv6Checksum(pkt, lladdr1, lladdr0, payload.ToVectorisedView()))
+					icmpHdr.SetChecksum(header.ICMPv6Checksum(icmpHdr, lladdr1, lladdr0, payload.ToVectorisedView()))
 				}
 
 				ip := header.IPv6(hdr.Prepend(header.IPv6MinimumSize))
@@ -911,9 +916,10 @@ func TestICMPChecksumValidationWithPayloadMultipleViews(t *testing.T) {
 					SrcAddr:       lladdr1,
 					DstAddr:       lladdr0,
 				})
-				e.InjectInbound(ProtocolNumber, &stack.PacketBuffer{
+				pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
 					Data: buffer.NewVectorisedView(header.IPv6MinimumSize+size+payloadSize, []buffer.View{hdr.View(), payload}),
 				})
+				e.InjectInbound(ProtocolNumber, pkt)
 			}
 
 			stats := s.Stats().ICMP.V6PacketsReceived

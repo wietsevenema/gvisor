@@ -18,6 +18,12 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/buffer"
 )
 
+type NewPacketBufferOptions struct {
+	ReserveHeaderBytes int
+	Data               buffer.VectorisedView
+	Owner              tcpip.PacketOwner
+}
+
 // A PacketBuffer contains all the data of a network packet.
 //
 // As a PacketBuffer traverses up the stack, it may be necessary to pass it to
@@ -46,7 +52,7 @@ type PacketBuffer struct {
 	// TODO(gvisor.dev/issue/170): Forwarded packets don't currently
 	// populate Header, but should. This will be doable once early parsing
 	// (https://github.com/google/gvisor/pull/1995) is supported.
-	Header buffer.Prependable
+	header buffer.Prependable
 
 	// These fields are used by both inbound and outbound packets. They
 	// typically overlap with the Data and Header fields.
@@ -57,9 +63,9 @@ type PacketBuffer struct {
 	//
 	// These fields may be Views into other slices (either Data or Header).
 	// SR dosen't support this, so deep copies are necessary in some cases.
-	LinkHeader      buffer.View
-	NetworkHeader   buffer.View
-	TransportHeader buffer.View
+	LinkHeader      PacketHeader
+	NetworkHeader   PacketHeader
+	TransportHeader PacketHeader
 
 	// Hash is the transport layer hash of this packet. A value of zero
 	// indicates no valid hash has been set.
@@ -80,6 +86,46 @@ type PacketBuffer struct {
 	NatDone bool
 }
 
+/*
+	pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+		ReserveHeaderBytes:
+		Data:
+		Owner:
+	})
+*/
+
+func NewPacketBuffer(opts *NewPacketBufferOptions) *PacketBuffer {
+	pbuf := &PacketBuffer{
+		Data:  opts.Data,
+		Owner: opts.Owner,
+	}
+	pbuf.LinkHeader = PacketHeader{
+		pbuf: pbuf,
+	}
+	pbuf.NetworkHeader = PacketHeader{
+		pbuf: pbuf,
+	}
+	pbuf.TransportHeader = PacketHeader{
+		pbuf: pbuf,
+	}
+	if opts.ReserveHeaderBytes != 0 {
+		pbuf.header = buffer.NewPrependable(opts.ReserveHeaderBytes)
+	}
+	return pbuf
+}
+
+func (pk *PacketBuffer) Size() int {
+	return pk.header.UsedLength() + pk.Data.Size()
+}
+
+func (pk *PacketBuffer) Views() (v buffer.View, vs buffer.VectorisedView) {
+	return pk.header.View(), pk.Data
+}
+
+func (pk *PacketBuffer) ReservedHeaderBytes() int {
+	return pk.header.UsedLength() + pk.header.AvailableLength()
+}
+
 // Clone makes a copy of pk. It clones the Data field, which creates a new
 // VectorisedView but does not deep copy the underlying bytes.
 //
@@ -87,13 +133,10 @@ type PacketBuffer struct {
 //
 // FIXME(b/153685824): Data gets copied but not other header references.
 func (pk *PacketBuffer) Clone() *PacketBuffer {
-	return &PacketBuffer{
+	newPk := &PacketBuffer{
 		PacketBufferEntry:     pk.PacketBufferEntry,
 		Data:                  pk.Data.Clone(nil),
-		Header:                pk.Header,
-		LinkHeader:            pk.LinkHeader,
-		NetworkHeader:         pk.NetworkHeader,
-		TransportHeader:       pk.TransportHeader,
+		header:                pk.header.DeepCopy(),
 		Hash:                  pk.Hash,
 		Owner:                 pk.Owner,
 		EgressRoute:           pk.EgressRoute,
@@ -101,6 +144,93 @@ func (pk *PacketBuffer) Clone() *PacketBuffer {
 		NetworkProtocolNumber: pk.NetworkProtocolNumber,
 		NatDone:               pk.NatDone,
 	}
+	newPk.LinkHeader = pk.LinkHeader.clone(newPk)
+	newPk.NetworkHeader = pk.NetworkHeader.clone(newPk)
+	newPk.TransportHeader = pk.TransportHeader.clone(newPk)
+	return newPk
+}
+
+type PacketHeader struct {
+	pbuf   *PacketBuffer
+	buf    buffer.View
+	offset int
+}
+
+func (h *PacketHeader) Size() int {
+	return len(h.buf)
+}
+
+func (h *PacketHeader) Empty() bool {
+	return len(h.buf) == 0
+}
+
+func (h *PacketHeader) View() buffer.View {
+	return h.buf
+}
+
+func (h *PacketHeader) Push(size int) buffer.View {
+	if h.buf != nil {
+		panic("Push must not be called twice")
+	}
+	h.buf = buffer.View(h.pbuf.header.Prepend(size))
+	h.offset = -h.pbuf.header.UsedLength()
+	return h.buf
+}
+
+func (h *PacketHeader) Consume(size int) (buffer.View, bool) {
+	if h.buf != nil {
+		panic("Consume must not be called twice")
+	}
+	v, ok := h.pbuf.Data.PullUp(size)
+	if !ok {
+		return nil, false
+	}
+	h.pbuf.Data.TrimFront(size)
+	h.buf = v
+	return h.buf, true
+}
+
+func (h *PacketHeader) clone(newPbuf *PacketBuffer) PacketHeader {
+	var newBuf buffer.View
+	if h.offset < 0 {
+		// In header.
+		l := len(h.buf)
+		v := newPbuf.header.View()
+		newBuf = v[len(v)+h.offset:][:l:l]
+	} else {
+		newBuf = append(newBuf, h.buf...)
+	}
+	return PacketHeader{
+		pbuf:   newPbuf,
+		buf:    newBuf,
+		offset: h.offset,
+	}
+}
+
+// For test.
+func (h *PacketHeader) AvailableLength() int {
+	return h.pbuf.header.AvailableLength()
+}
+
+// For test.
+func (h *PacketHeader) ViewToPacketEnd() buffer.View {
+	var v buffer.View
+	switch h {
+	case &h.pbuf.LinkHeader:
+		v = append(v, h.pbuf.LinkHeader.View()...)
+		fallthrough
+	case &h.pbuf.NetworkHeader:
+		v = append(v, h.pbuf.NetworkHeader.View()...)
+		fallthrough
+	case &h.pbuf.TransportHeader:
+		v = append(v, h.pbuf.TransportHeader.View()...)
+
+	default:
+		panic("header does not belong to PacketBuffer anymore")
+	}
+
+	v = append(v, h.pbuf.Data.ToView()...)
+	return v
 }
 
 // noCopy may be embedded into structs which must not be copied

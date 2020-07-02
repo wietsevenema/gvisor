@@ -187,8 +187,7 @@ func (e *endpoint) LinkAddress() tcpip.LinkAddress {
 // currently writable, the packet is dropped.
 func (e *endpoint) WritePacket(r *stack.Route, _ *stack.GSO, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) *tcpip.Error {
 	// Add the ethernet header here.
-	eth := header.Ethernet(pkt.Header.Prepend(header.EthernetMinimumSize))
-	pkt.LinkHeader = buffer.View(eth)
+	eth := header.Ethernet(pkt.LinkHeader.Push(header.EthernetMinimumSize))
 	ethHdr := &header.EthernetFields{
 		DstAddr: r.RemoteLinkAddress,
 		Type:    protocol,
@@ -200,10 +199,10 @@ func (e *endpoint) WritePacket(r *stack.Route, _ *stack.GSO, protocol tcpip.Netw
 	}
 	eth.Encode(ethHdr)
 
-	v := pkt.Data.ToView()
+	v, vs := pkt.Views()
 	// Transmit the packet.
 	e.mu.Lock()
-	ok := e.tx.transmit(pkt.Header.View(), v)
+	ok := e.tx.transmit(v, vs.ToView())
 	e.mu.Unlock()
 
 	if !ok {
@@ -274,11 +273,15 @@ func (e *endpoint) dispatchLoop(d stack.NetworkDispatcher) {
 		}
 
 		// Send packet up the stack.
-		eth := header.Ethernet(b[:header.EthernetMinimumSize])
-		d.DeliverNetworkPacket(eth.SourceAddress(), eth.DestinationAddress(), eth.Type(), &stack.PacketBuffer{
-			Data:       buffer.View(b[header.EthernetMinimumSize:]).ToVectorisedView(),
-			LinkHeader: buffer.View(eth),
+		pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+			Data: buffer.View(b).ToVectorisedView(),
 		})
+		hdr, ok := pkt.LinkHeader.Consume(header.EthernetMinimumSize)
+		if !ok {
+			panic("b does not contain Ethernet header")
+		}
+		eth := header.Ethernet(hdr)
+		d.DeliverNetworkPacket(eth.SourceAddress(), eth.DestinationAddress(), eth.Type(), pkt)
 	}
 
 	// Clean state.

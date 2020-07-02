@@ -316,9 +316,9 @@ func (ep *endpoint) HandlePacket(nicID tcpip.NICID, localAddr tcpip.LinkAddress,
 	// Push new packet into receive list and increment the buffer size.
 	var packet packet
 	// TODO(b/129292371): Return network protocol.
-	if len(pkt.LinkHeader) > 0 {
+	if !pkt.LinkHeader.Empty() {
 		// Get info directly from the ethernet header.
-		hdr := header.Ethernet(pkt.LinkHeader)
+		hdr := header.Ethernet(pkt.LinkHeader.View())
 		packet.senderAddr = tcpip.FullAddress{
 			NIC:  nicID,
 			Addr: tcpip.Address(hdr.SourceAddress()),
@@ -338,7 +338,7 @@ func (ep *endpoint) HandlePacket(nicID tcpip.NICID, localAddr tcpip.LinkAddress,
 		// Raw packets need their ethernet headers prepended before
 		// queueing.
 		var linkHeader buffer.View
-		if len(pkt.LinkHeader) == 0 {
+		if pkt.LinkHeader.Empty() {
 			// We weren't provided with an actual ethernet header,
 			// so fake one.
 			ethFields := header.EthernetFields{
@@ -350,7 +350,7 @@ func (ep *endpoint) HandlePacket(nicID tcpip.NICID, localAddr tcpip.LinkAddress,
 			fakeHeader.Encode(&ethFields)
 			linkHeader = buffer.View(fakeHeader)
 		} else {
-			linkHeader = append(buffer.View(nil), pkt.LinkHeader...)
+			linkHeader = append(buffer.View(nil), pkt.LinkHeader.View()...)
 		}
 		combinedVV := linkHeader.ToVectorisedView()
 		combinedVV.Append(pkt.Data)

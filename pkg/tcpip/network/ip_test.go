@@ -156,13 +156,13 @@ func (t *testObject) WritePacket(_ *stack.Route, _ *stack.GSO, protocol tcpip.Ne
 	var dstAddr tcpip.Address
 
 	if t.v4 {
-		h := header.IPv4(pkt.Header.View())
+		h := header.IPv4(pkt.NetworkHeader.View())
 		prot = tcpip.TransportProtocolNumber(h.Protocol())
 		srcAddr = h.SourceAddress()
 		dstAddr = h.DestinationAddress()
 
 	} else {
-		h := header.IPv6(pkt.Header.View())
+		h := header.IPv6(pkt.NetworkHeader.View())
 		prot = tcpip.TransportProtocolNumber(h.NextHeader())
 		srcAddr = h.SourceAddress()
 		dstAddr = h.DestinationAddress()
@@ -233,8 +233,11 @@ func TestIPv4Send(t *testing.T) {
 		payload[i] = uint8(i)
 	}
 
-	// Allocate the header buffer.
-	hdr := buffer.NewPrependable(int(ep.MaxHeaderLength()))
+	// Setup the packet buffer.
+	pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+		ReserveHeaderBytes: int(ep.MaxHeaderLength()),
+		Data:               payload.ToVectorisedView(),
+	})
 
 	// Issue the write.
 	o.protocol = 123
@@ -250,10 +253,7 @@ func TestIPv4Send(t *testing.T) {
 		Protocol: 123,
 		TTL:      123,
 		TOS:      stack.DefaultTOS,
-	}, &stack.PacketBuffer{
-		Header: hdr,
-		Data:   payload.ToVectorisedView(),
-	}); err != nil {
+	}, pkt); err != nil {
 		t.Fatalf("WritePacket failed: %v", err)
 	}
 }
@@ -293,9 +293,11 @@ func TestIPv4Receive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not find route: %v", err)
 	}
-	pkt := stack.PacketBuffer{Data: view.ToVectorisedView()}
-	proto.Parse(&pkt)
-	ep.HandlePacket(&r, &pkt)
+	pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+		Data: view.ToVectorisedView(),
+	})
+	proto.Parse(pkt)
+	ep.HandlePacket(&r, pkt)
 	if o.dataCalls != 1 {
 		t.Fatalf("Bad number of data calls: got %x, want 1", o.dataCalls)
 	}
@@ -445,17 +447,21 @@ func TestIPv4FragmentationReceive(t *testing.T) {
 	}
 
 	// Send first segment.
-	pkt := stack.PacketBuffer{Data: frag1.ToVectorisedView()}
-	proto.Parse(&pkt)
-	ep.HandlePacket(&r, &pkt)
+	pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+		Data: frag1.ToVectorisedView(),
+	})
+	proto.Parse(pkt)
+	ep.HandlePacket(&r, pkt)
 	if o.dataCalls != 0 {
 		t.Fatalf("Bad number of data calls: got %x, want 0", o.dataCalls)
 	}
 
 	// Send second segment.
-	pkt = stack.PacketBuffer{Data: frag2.ToVectorisedView()}
-	proto.Parse(&pkt)
-	ep.HandlePacket(&r, &pkt)
+	pkt = stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+		Data: frag2.ToVectorisedView(),
+	})
+	proto.Parse(pkt)
+	ep.HandlePacket(&r, pkt)
 	if o.dataCalls != 1 {
 		t.Fatalf("Bad number of data calls: got %x, want 1", o.dataCalls)
 	}
@@ -475,8 +481,11 @@ func TestIPv6Send(t *testing.T) {
 		payload[i] = uint8(i)
 	}
 
-	// Allocate the header buffer.
-	hdr := buffer.NewPrependable(int(ep.MaxHeaderLength()))
+	// Setup the packet buffer.
+	pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+		ReserveHeaderBytes: int(ep.MaxHeaderLength()),
+		Data:               payload.ToVectorisedView(),
+	})
 
 	// Issue the write.
 	o.protocol = 123
@@ -492,10 +501,7 @@ func TestIPv6Send(t *testing.T) {
 		Protocol: 123,
 		TTL:      123,
 		TOS:      stack.DefaultTOS,
-	}, &stack.PacketBuffer{
-		Header: hdr,
-		Data:   payload.ToVectorisedView(),
-	}); err != nil {
+	}, pkt); err != nil {
 		t.Fatalf("WritePacket failed: %v", err)
 	}
 }
@@ -535,9 +541,11 @@ func TestIPv6Receive(t *testing.T) {
 		t.Fatalf("could not find route: %v", err)
 	}
 
-	pkt := stack.PacketBuffer{Data: view.ToVectorisedView()}
-	proto.Parse(&pkt)
-	ep.HandlePacket(&r, &pkt)
+	pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+		Data: view.ToVectorisedView(),
+	})
+	proto.Parse(pkt)
+	ep.HandlePacket(&r, pkt)
 	if o.dataCalls != 1 {
 		t.Fatalf("Bad number of data calls: got %x, want 1", o.dataCalls)
 	}
@@ -664,10 +672,13 @@ func TestIPv6ReceiveControl(t *testing.T) {
 func truncatedPacket(view buffer.View, trunc, netHdrLen int) *stack.PacketBuffer {
 	v := view[:len(view)-trunc]
 	if len(v) < netHdrLen {
-		return &stack.PacketBuffer{Data: v.ToVectorisedView()}
+		return stack.NewPacketBuffer(&stack.NewPacketBufferOptions{Data: v.ToVectorisedView()})
 	}
-	return &stack.PacketBuffer{
-		NetworkHeader: v[:netHdrLen],
-		Data:          v[netHdrLen:].ToVectorisedView(),
+	pkt := stack.NewPacketBuffer(&stack.NewPacketBufferOptions{
+		Data: v.ToVectorisedView(),
+	})
+	if _, ok := pkt.NetworkHeader.Consume(netHdrLen); !ok {
+		panic("v must be longer than netHdrLen")
 	}
+	return pkt
 }
